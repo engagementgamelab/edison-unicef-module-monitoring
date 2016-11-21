@@ -23,10 +23,8 @@ var sdCard = require('fs');
 
 
 var IMUClass = require('jsupm_lsm9ds0'); // Instantiate an LSM9DS0 using default parameters (bus 1, gyro addr 6b, xm addr 1d)
-console.log('IMUClasss', new IMUClass.LSM9DS0())
 var AHRS = require('jsupm_ahrs');
 var Madgwick = new AHRS.Madgwick();
-//console.log('AHRS', )
 
 var horizontalPositionInterruptPin = 11;
 var GyroscopeInterruptPin = 12;
@@ -52,7 +50,7 @@ var app;
 
 var soapStatusText = "";
 var timeWithUnsavedTouch = 0;
-var systemRefreshFrequency = 2000; // in milliseconds
+var systemRefreshFrequency = 100; // in milliseconds
 var durationBeforeSleep = 45; // in seconds
 
 var appStateCountdown = 5 * (1000 / systemRefreshFrequency);
@@ -69,6 +67,9 @@ var zGyroAxis = new IMUClass.new_floatp();
 
 var xMagnetAxis = new IMUClass.new_floatp();
 var yMagnetAxis = new IMUClass.new_floatp();
+
+var zeroVals = [0, 0, 0, 0, 0, 0];
+
 var zMagnetAxis = new IMUClass.new_floatp();
 
 var currentTime;
@@ -89,32 +90,31 @@ function getGyroscopeData(currentTime) {
     
     gyroAccelCompass.updateGyroscope();
     gyroAccelCompass.updateAccelerometer();
-    gyroAccelCompass.updateMagnetometer();
+//    gyroAccelCompass.updateMagnetometer();
 
     gyroAccelCompass.getGyroscope(xGyroAxis, yGyroAxis, zGyroAxis);
     gyroAccelCompass.getAccelerometer(xAcceleroValue, yAcceleroValue, zAcceleroValue);
-    gyroAccelCompass.getMagnetometer(xMagnetAxis, yMagnetAxis, zMagnetAxis);
+//    gyroAccelCompass.getMagnetometer(xMagnetAxis, yMagnetAxis, zMagnetAxis);
     
-    var gx = IMUClass.floatp_value(xGyroAxis);
-    var gy = IMUClass.floatp_value(yGyroAxis);  
-    var gz = IMUClass.floatp_value(zGyroAxis);
+    var gx = IMUClass.floatp_value(xGyroAxis) - zeroVals[3];
+    var gy = IMUClass.floatp_value(yGyroAxis) - zeroVals[4];  
+    var gz = IMUClass.floatp_value(zGyroAxis) - zeroVals[5];
     
-    var ax = IMUClass.floatp_value(xAcceleroValue);
-    var ay = IMUClass.floatp_value(yAcceleroValue);  
-    var az = IMUClass.floatp_value(zAcceleroValue);
+    var ax = IMUClass.floatp_value(xAcceleroValue) - zeroVals[0];
+    var ay = IMUClass.floatp_value(yAcceleroValue) - zeroVals[1]; 
+    var az = IMUClass.floatp_value(zAcceleroValue) - zeroVals[2];
     
     var mx = IMUClass.floatp_value(xMagnetAxis);
     var my = IMUClass.floatp_value(yMagnetAxis);  
     var mz = IMUClass.floatp_value(xMagnetAxis);
-
-//    logger("GYRO:")
     
-    Madgwick.update(gx, gy, gz, ax, ay, az, mx, my, mz)
+//    Madgwick.update(gx, gy, gz, ax, ay, az, mx, my, mz);
+    Madgwick.updateIMU(gx, gy, gz, ax, ay, az);
     
     logger("---------")
-    logger('Pitch: ' + Madgwick.getPitch())
-    logger('Yaw: ' + Madgwick.getPitch())
-    logger('Roll: ' + Madgwick.getRoll())
+    logger('Pitch: ' + Math.round(Madgwick.getPitch() * 100) / 100)
+//    logger('Yaw: ' + Madgwick.getPitch())
+//    logger('Roll: ' + Madgwick.getRoll())
 }
 
 
@@ -128,6 +128,23 @@ function setupGyroscope() {
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG5_G, 0x00);
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_TSH_YH_G, rotationalSpeed); //set threshold for high rotation speed per AXIS, TSH_YH_G is for Y axis only!
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_DURATION_G, (rotationDuration | 0x80)); //set minimum rotation duration to trigger interrupt (based on frequency)
+    
+    for(var i = 0; i < 100; i++) {
+        
+        gyroAccelCompass.updateGyroscope();
+        gyroAccelCompass.getGyroscope(xGyroAxis, yGyroAxis, zGyroAxis);
+        var gx = IMUClass.floatp_value(xGyroAxis);
+        var gy = IMUClass.floatp_value(yGyroAxis);  
+        var gz = IMUClass.floatp_value(zGyroAxis);
+        
+        zeroVals[3] += gx;
+        zeroVals[4] += gy;
+        zeroVals[5] += gz;
+    }
+    
+    zeroVals[3] /= 100;
+    zeroVals[4] /= 100;
+    zeroVals[5] /= 100;
 
 
     //showGyrodebugInfo();
@@ -164,6 +181,25 @@ function setupAccelerometer() {
     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_REG,0x8A); //enable X,Y high acceleration (both needed high for interrupt to happen)
     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_THS,0x64); //100 out of 127 possible on 2G , 100 ~ high 1.5G
     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_DURATION,0x20); //32 out of 127 possible, 32 = 340 ms
+    
+    for(var i = 0; i < 100; i++) {
+        
+        gyroAccelCompass.updateAccelerometer();
+        gyroAccelCompass.getAccelerometer(xAcceleroValue, yAcceleroValue, zAcceleroValue);
+    
+        var ax = IMUClass.floatp_value(xAcceleroValue);
+        var ay = IMUClass.floatp_value(yAcceleroValue);  
+        var az = IMUClass.floatp_value(zAcceleroValue);
+                
+        zeroVals[0] += ax;
+        zeroVals[1] += ay;
+        zeroVals[2] += az;
+        
+    }
+    
+    zeroVals[0] /= 100;
+    zeroVals[1] /= 100;
+    zeroVals[2] /= 100;
 }
 
 //--------------------------------------------------------------
@@ -246,7 +282,6 @@ var justFinishedRecordingMovie = false;
 setInterval(function() {
 
     getGyroscopeData(currentTime);
-
 
 }, systemRefreshFrequency);
 
