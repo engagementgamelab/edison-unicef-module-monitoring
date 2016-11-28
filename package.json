@@ -12,6 +12,7 @@
     "jsupm_lsm9ds0": "0.4.1",
     "express": "4.13.1",
     "serialport": "3.0.0",
+    "tar.gz": "1.0.5",
     "winston-daily-rotate-file": "1.0.1",
     "winston": "2.2.0"
   }

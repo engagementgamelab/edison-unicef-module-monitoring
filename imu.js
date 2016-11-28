@@ -1,3 +1,6 @@
+var _APP_TIMEOUT = 50000;
+
+        //300000
 var SegfaultHandler = require('segfault-handler');
 SegfaultHandler.registerHandler("crash.log");
 
@@ -20,7 +23,7 @@ rotationDuration = (Number(process.env.ROTATION_DURATION)) || 0x14; // up to 127
 
 var express = require('express');
 var sdCard = require('fs');
-
+var targz = require('tar.gz');
 
 var IMUClass = require('jsupm_lsm9ds0'); // Instantiate an LSM9DS0 using default parameters (bus 1, gyro addr 6b, xm addr 1d)
 var AHRS = require('jsupm_ahrs');
@@ -75,221 +78,129 @@ var zMagnetAxis = new IMUClass.new_floatp();
 var currentTime;
 var gyroscopeDataText = "";
 
-function gyroInterruptCallBack() {
-	// console.log("-ISR GYRO");
-}
+var pushButtonLightPin = 13;
+var pushButtonLight = new mraa.Gpio(pushButtonLightPin);
 
+var initWebService = function () {
+    app = express();
+    app.set('port', (process.env.MONITORING_PORT || 3001));
+    
+    app.get('/', function (req, res) {
+        
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET');
+        res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-function logger(msg) {
-    serialPort.write(msg + "\n\r", function (err, results) {
+        var sensorsOverallStatus = "OK";
+        var errorStatus = "";
+
+        if (gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_WHO_AM_I_G) === 255) {
+            errorStatus += "| Gyroscope unreachable "; // if chip failed return false all the time
+            sensorsOverallStatus += " | Gyroscope FAIL";
+        }
+        if (gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_WHO_AM_I_XM) === 255) {
+            errorStatus += " | Accelerometer unreachable. "; // if chip failed return false all the time
+            sensorsOverallStatus += " | Accelerometer FAIL.";
+        }
+        
+        res.send('<script>timeLeft=' + _APP_TIMEOUT + '; setInterval(function() {' +
+                'timeLeft-=1000;' + 
+                'if(timeLeft < 0) { document.body.innerHTML = "App is closed! Reboot device to launch app again." } ' + 
+                ' else { document.getElementById("timer").innerHTML = timeLeft/1000 + " seconds left"; } }, 1000);</script>' +
+                '<a href="/download">Download CSV Archive</a> <br /><b>IMU Status:</b><br />' + 
+                sensorsOverallStatus + errorStatus + 
+                '<p>Time left before this app will shutdown: <span id="timer"></span></p>');
+        
     });
-    console.log(msg);
+
+    app.get('/download', function (req, res) {
+
+        var today = new Date();
+        var day = (today.getMonth() + 1) + "-" + today.getDate() + "-" + today.getFullYear().toString();
+        var fileName = 'imu_data_'+ day +'.tar.gz';
+        var filePath = __dirname + '/' + fileName;
+        
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET');
+        res.header('Access-Control-Allow-Headers', 'Content-Type');
+
+        targz().compress('/media/sdcard/sensor_data', filePath, function(err) {
+
+              if(err)
+                console.error('Something is wrong ', err.stack);
+            
+            res.type('application/tar+gzip');
+            res.setHeader('Content-disposition', 'attachment; filename=' + fileName);
+            res.sendFile(filePath);
+
+        });
+
+    });
+    app.listen(app.get('port'), function () {
+        console.info('Monitoring listening on port ' + app.get('port'));
+
+        // Turn on LED
+        pushButtonLight.write(1);
+
+        // Shut app down after timeout
+        setInterval(function() { 
+            pushButtonLight.write(0);
+
+            process.exit(); }, _APP_TIMEOUT);
+    });
 }
-
-function getGyroscopeData(currentTime) {
-    
-    gyroAccelCompass.updateGyroscope();
-    gyroAccelCompass.updateAccelerometer();
-//    gyroAccelCompass.updateMagnetometer();
-
-    gyroAccelCompass.getGyroscope(xGyroAxis, yGyroAxis, zGyroAxis);
-    gyroAccelCompass.getAccelerometer(xAcceleroValue, yAcceleroValue, zAcceleroValue);
-//    gyroAccelCompass.getMagnetometer(xMagnetAxis, yMagnetAxis, zMagnetAxis);
-    
-    var gx = IMUClass.floatp_value(xGyroAxis) - zeroVals[3];
-    var gy = IMUClass.floatp_value(yGyroAxis) - zeroVals[4];  
-    var gz = IMUClass.floatp_value(zGyroAxis) - zeroVals[5];
-    
-    var ax = IMUClass.floatp_value(xAcceleroValue) - zeroVals[0];
-    var ay = IMUClass.floatp_value(yAcceleroValue) - zeroVals[1]; 
-    var az = IMUClass.floatp_value(zAcceleroValue) - zeroVals[2];
-    
-    var mx = IMUClass.floatp_value(xMagnetAxis);
-    var my = IMUClass.floatp_value(yMagnetAxis);  
-    var mz = IMUClass.floatp_value(xMagnetAxis);
-    
-//    Madgwick.update(gx, gy, gz, ax, ay, az, mx, my, mz);
-    Madgwick.updateIMU(gx, gy, gz, ax, ay, az);
-    
-    logger("---------")
-    logger('Pitch: ' + Math.round(Madgwick.getPitch() * 100) / 100)
-//    logger('Yaw: ' + Madgwick.getPitch())
-//    logger('Roll: ' + Madgwick.getRoll())
-}
-
 
 //--------------------------------------------------------------
 function setupGyroscope() {
 
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_CFG_G, 0x08); // enable interrupt only on Y axis (not Latching)
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG1_G, 0x0A); // Y axis enabled only
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_CFG_G,  0x08); // enable interrupt only on Y axis (not Latching)
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG1_G, 0x0A);// Y axis enabled only
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG2_G, 0x00);
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG3_G, 0x80);
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG5_G, 0x00);
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_TSH_YH_G, rotationalSpeed); //set threshold for high rotation speed per AXIS, TSH_YH_G is for Y axis only!
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_TSH_YH_G, rotationalSpeed);//set threshold for high rotation speed per AXIS, TSH_YH_G is for Y axis only!
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_DURATION_G, (rotationDuration | 0x80)); //set minimum rotation duration to trigger interrupt (based on frequency)
     
-    for(var i = 0; i < 100; i++) {
-        
-        gyroAccelCompass.updateGyroscope();
-        gyroAccelCompass.getGyroscope(xGyroAxis, yGyroAxis, zGyroAxis);
-        var gx = IMUClass.floatp_value(xGyroAxis);
-        var gy = IMUClass.floatp_value(yGyroAxis);  
-        var gz = IMUClass.floatp_value(zGyroAxis);
-        
-        zeroVals[3] += gx;
-        zeroVals[4] += gy;
-        zeroVals[5] += gz;
-    }
-    
-    zeroVals[3] /= 100;
-    zeroVals[4] /= 100;
-    zeroVals[5] /= 100;
-
-
-    //showGyrodebugInfo();
-
-    /*gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_INT1_CFG_G,  0x48 ); //0x60 is latched interrupt on Y axis
-
-     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_CTRL_REG1_G, 0x0F );     //set Frequency of Gyro sensing (ODR) and axis enabled (x,y,z)
-     //gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_INT1_DURATION_G, 0x40 ); //set minimum rotation duration to trigger interrupt (based on frequency)
-     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_INT1_TSH_ZH_G, 0x01 );   //set threshold for positive rotation speed
-
-     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_CTRL_REG2_G, 0x00 ); // normal mode for filtering data
-     gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_CTRL_REG3_G, 0x88 ); // interrupt enabled, active high, DRDY enabled
-     //gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_GYRO , IMUClass.LSM9DS0.REG_CTRL_REG5_G, 0x00 ); // all default values
-     */
 }
 
 //--------------------------------------------------------------
 function setupAccelerometer() {
 
     // SETUP GEN 1 FOR Z AXIS HORIZONTAL DETECTION
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_REG, 0x30); //generation on Z high event
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_REG, 0x20); //generation on Z high event
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG0_XM, 0x00); //default value
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG1_XM, 0x67); //0x64); //set Frequency of accelero sensing (ODR is 100 Hz) and axis enabled (z)
 
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG2_XM, 0x21); // Set accelero scale to 2g
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG2_XM, 0x00); // Set accelero scale to 2g
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG3_XM, 0x20); //enable pinXM for acclero interrupt
     gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG5_XM, 0x0); // nothing latch //GEN 1
 
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_DURATION, 0x33); // set minimum acceleration duration to trigger interrupt
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_THS, 0x32); // set threshold for slightly below 1G value to trigger interrupt (based on 2G scale in accelero)
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_DURATION, 0x2F); // set minimum acceleration duration to trigger interrupt
+    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_THS, 0x3E); // set threshold for slightly below 1G value to trigger interrupt (based on 2G scale in accelero)
 
-
-    //------ Setup interrypt 2 for container transport detection
-    gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_REG,0x8A); //enable X,Y high acceleration (both needed high for interrupt to happen)
-    gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_THS,0x64); //100 out of 127 possible on 2G , 100 ~ high 1.5G
-    gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_DURATION,0x20); //32 out of 127 possible, 32 = 340 ms
-    
-    for(var i = 0; i < 100; i++) {
-        
-        gyroAccelCompass.updateAccelerometer();
-        gyroAccelCompass.getAccelerometer(xAcceleroValue, yAcceleroValue, zAcceleroValue);
-    
-        var ax = IMUClass.floatp_value(xAcceleroValue);
-        var ay = IMUClass.floatp_value(yAcceleroValue);  
-        var az = IMUClass.floatp_value(zAcceleroValue);
-                
-        zeroVals[0] += ax;
-        zeroVals[1] += ay;
-        zeroVals[2] += az;
-        
-    }
-    
-    zeroVals[0] /= 100;
-    zeroVals[1] /= 100;
-    zeroVals[2] /= 100;
-}
-
-//--------------------------------------------------------------
-function setupMagnetometer() {
-
-    // SETUP GEN 1 FOR Z AXIS HORIZONTAL DETECTION
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_REG, 0x30); //generation on Z high event
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG0_XM, 0x00); //default value
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG1_XM, 0x67); //0x64); //set Frequency of accelero sensing (ODR is 100 Hz) and axis enabled (z)
-
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG2_XM, 0x21); // Set accelero scale to 2g
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG3_XM, 0x20); //enable pinXM for acclero interrupt
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_CTRL_REG5_XM, 0x0); // nothing latch //GEN 1
-
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_DURATION, 0x33); // set minimum acceleration duration to trigger interrupt
-    gyroAccelCompass.writeReg(IMUClass.LSM9DS0.DEV_XM, IMUClass.LSM9DS0.REG_INT_GEN_1_THS, 0x32); // set threshold for slightly below 1G value to trigger interrupt (based on 2G scale in accelero)
-
-
-    //------ Setup interrypt 2 for container transport detection
-    gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_REG,0x8A); //enable X,Y high acceleration (both needed high for interrupt to happen)
-    gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_THS,0x64); //100 out of 127 possible on 2G , 100 ~ high 1.5G
-    gyroAccelCompass.writeReg( IMUClass.LSM9DS0.DEV_XM , IMUClass.LSM9DS0.REG_INT_GEN_2_DURATION,0x20); //32 out of 127 possible, 32 = 340 ms
-}
-
-//--------------------------------------------------------------
-function showGyrodebugInfo() {
-
-    /*winston.info("Gyro CFG : 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_CFG_G).toString(16));
-    winston.info("Gyro REG1: 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG1_G).toString(16));
-    winston.info("Gyro REG2: 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG2_G).toString(16));
-    winston.info("Gyro REG3: 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG3_G).toString(16));
-    winston.info("Gyro REG4: 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG4_G).toString(16));
-    winston.info("Gyro REG5: 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_CTRL_REG5_G).toString(16));
-    winston.info("Gyro status" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_STATUS_REG_G).toString(16));
-    winston.info("Gyro FIFO . 0x" + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_FIFO_CTRL_REG_G).toString(16));
-    winston.info("Gyro interrupt source: " + gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_INT1_SRC_G).toString(16));
-    */
 }
 
 //-----------------------------------------------------------------------------------------------------------
 function setupMonitoring() {
+
+
+    pushButtonLight.dir(mraa.DIR_OUT);
     
     gyroAccelCompass = new IMUClass.LSM9DS0();
 
     if (gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_WHO_AM_I_G) != 255) {
-        logger("MOTION SENSOR OK");
+        
         gyroAccelCompass.init(); // Initialize the device with default values
         setupGyroscope();
         setupAccelerometer();
 
-
-        gyrocsopeInterrupt = new mraa.Gpio(GyroscopeInterruptPin);
-        gyrocsopeInterrupt.dir(mraa.DIR_IN);
-
-        horizontalPositionInterrupt = new mraa.Gpio(horizontalPositionInterruptPin);
-        horizontalPositionInterrupt.dir(mraa.DIR_IN);
-
-
-        var moduleTransportationInterrupt = new mraa.Gpio(moduleIsBeingTransportedInterruptPin);
-        moduleTransportationInterrupt.dir(mraa.DIR_IN);
-
-
-        // gyrocsopeInterrupt.isr(mraa.EDGE_BOTH, gyroInterruptCallBack);
-        // horizontalPositionInterrupt.isr(mraa.EDGE_BOTH, horizontalPositionCallBack);
-        // moduleTransportationInterrupt.isr(mraa.EDGE_BOTH, moduleTransportationCallBack);
-
     } else {
-        logger(" !!!!!!!!!!!!!!!!!! NO MOTION SENSOR !!!!!!!!!!!!!!!!");
         IMUSensorIsDamaged = true;
     }
 
 }
 
-// --------------------------------------------------------------------------
-//------------------------------- MAIN LOOP ---------------------------------
-// --------------------------------------------------------------------------
-
-var justFinishedRecordingMovie = false;
-
-setInterval(function() {
-
-    getGyroscopeData(currentTime);
-
-}, systemRefreshFrequency);
-
-serialPort.on("open", function() {
-    serialPort.write("\n\r-----------------------------------------------------------\n\r---------------- Starting monitoring app ----------------\n\r", function(err, results) { //Write data
-        setupMonitoring();
-    });
-});
+setupMonitoring();
 
 serialPort.on("error", function() {
     console.log("--SERIAL PORT ENCOUNTERED AN ERROR--");
@@ -298,5 +209,7 @@ serialPort.on("error", function() {
 serialPort.on("close", function() {
     console.log("...serial port closed");
 });
+
+initWebService();
 // --------------------------------------------------------------------------
 // --------------------------------------------------------------------------
