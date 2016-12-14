@@ -133,18 +133,10 @@ var initWebService = function () {
         res.header('Access-Control-Allow-Methods', 'GET');
         res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-
         var sensorsOverallStatus = "OK";
         var errorStatus = "";
 
         switch (req.query.device) {
-            case "touch" :
-                if (!touchSensorWorks()) {
-                    errorStatus = "Touch sensor damaged";
-                    sensorsOverallStatus = "FAIL";
-                }
-                break;
-
             case "motion" :
 
                 if (gyroAccelCompass.readReg(IMUClass.LSM9DS0.DEV_GYRO, IMUClass.LSM9DS0.REG_WHO_AM_I_G) === 255) {
